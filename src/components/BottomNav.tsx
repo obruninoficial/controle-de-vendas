@@ -8,7 +8,7 @@ export function BottomNav() {
   const navigate = useNavigate()
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white/95 pb-safe-bottom backdrop-blur">
+    <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white pb-safe-bottom">
       <div className="mx-auto flex max-w-md items-end px-2 pt-2">
         <NavLink
           to="/"
