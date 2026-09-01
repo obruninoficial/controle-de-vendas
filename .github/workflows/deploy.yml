@@ -1,5 +1,8 @@
 name: Publicar Controle de Vendas
 
+# Roda automaticamente sempre que arquivos forem enviados (upload) para
+# a branch "main". Não requer computador nem terminal — tudo acontece
+# nos servidores do GitHub.
 on:
   push:
     branches: [main]
