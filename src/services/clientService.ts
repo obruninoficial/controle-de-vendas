@@ -55,3 +55,22 @@ export async function updateClient(id: number, name: string, phone?: string): Pr
     updatedAt: nowIso()
   })
 }
+
+/** Conta quantas vendas ativas um cliente possui, para avisar antes de excluir. */
+export async function countClientSales(clientId: number): Promise<number> {
+  return db.sales.where('clientId').equals(clientId).and((s) => s.status === 'active').count()
+}
+
+/**
+ * Exclui um cliente definitivamente. As vendas antigas desse cliente NÃO são
+ * apagadas (o histórico de vendas é preservado), mas deixam de ter um
+ * cliente vinculado — passam a aparecer como "Cliente removido". Os
+ * pagamentos avulsos do cliente são removidos junto, pois não fazem
+ * sentido sem o cliente associado.
+ */
+export async function deleteClient(id: number): Promise<void> {
+  await db.transaction('rw', db.clients, db.payments, async () => {
+    await db.payments.where('clientId').equals(id).delete()
+    await db.clients.delete(id)
+  })
+}

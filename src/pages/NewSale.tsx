@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Minus, Plus, Trash2, Search, X, Check } from 'lucide-react'
+import { Minus, Plus, Trash2, Search, X, Check, Calendar } from 'lucide-react'
 import { PageHeader } from '../components/PageHeader'
 import { CurrencyInput } from '../components/CurrencyInput'
 import { formatCurrency } from '../utils/currency'
+import { toDatetimeLocalValue, fromDatetimeLocalValue } from '../utils/date'
 import { listActiveProducts } from '../services/productService'
 import { listClients } from '../services/clientService'
 import { createSale } from '../services/saleService'
@@ -19,6 +20,8 @@ export function NewSale() {
   const [clientSheetOpen, setClientSheetOpen] = useState(false)
   const [clientSearch, setClientSearch] = useState('')
   const [paidAmount, setPaidAmount] = useState<number | null>(null)
+  const [saleDateValue, setSaleDateValue] = useState(() => toDatetimeLocalValue(new Date()))
+  const [showDateField, setShowDateField] = useState(false)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState(false)
@@ -93,7 +96,8 @@ export function NewSale() {
       await createSale({
         clientId: selectedClient?.id ?? null,
         items: cart,
-        paidAmount: effectivePaid
+        paidAmount: effectivePaid,
+        date: fromDatetimeLocalValue(saleDateValue)
       })
       setSuccess(true)
       setTimeout(() => navigate('/'), 900)
@@ -119,6 +123,38 @@ export function NewSale() {
       <PageHeader title="Nova venda" onBack={() => navigate(-1)} />
 
       <div className="px-4 pt-4">
+        {/* Data da venda */}
+        <div className="mb-4 flex items-center justify-between rounded-2xl bg-white px-4 py-3 shadow-sm">
+          {!showDateField ? (
+            <>
+              <div className="flex items-center gap-2 text-sm text-slate-600">
+                <Calendar size={16} className="text-slate-400" />
+                <span>
+                  {new Date(fromDatetimeLocalValue(saleDateValue)).toLocaleString('pt-BR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  })}
+                </span>
+              </div>
+              <button onClick={() => setShowDateField(true)} className="text-sm font-medium text-brand-600">
+                Alterar
+              </button>
+            </>
+          ) : (
+            <input
+              type="datetime-local"
+              value={saleDateValue}
+              onChange={(e) => setSaleDateValue(e.target.value)}
+              onBlur={() => setShowDateField(false)}
+              autoFocus
+              className="w-full bg-transparent text-sm text-slate-900 outline-none"
+            />
+          )}
+        </div>
+
         {/* Cliente */}
         <div>
           <label className="mb-1.5 block text-sm font-medium text-slate-600">Cliente</label>
@@ -214,6 +250,28 @@ export function NewSale() {
             <label className="mb-1.5 mt-3 block text-sm font-medium text-slate-600">
               Quanto foi pago?
             </label>
+
+            <div className="mb-2 flex gap-2">
+              <button
+                onClick={() => setPaidAmount(total)}
+                className={`flex-1 rounded-2xl py-3 text-sm font-semibold active:scale-[0.98] ${
+                  effectivePaid === total
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-emerald-50 text-emerald-700'
+                }`}
+              >
+                Pago
+              </button>
+              <button
+                onClick={() => setPaidAmount(0)}
+                className={`flex-1 rounded-2xl py-3 text-sm font-semibold active:scale-[0.98] ${
+                  effectivePaid === 0 ? 'bg-amber-600 text-white' : 'bg-amber-50 text-amber-700'
+                }`}
+              >
+                Fiado
+              </button>
+            </div>
+
             <CurrencyInput valueCents={effectivePaid} onChange={setPaidAmount} />
 
             <div className="mt-3 flex gap-3 text-sm">

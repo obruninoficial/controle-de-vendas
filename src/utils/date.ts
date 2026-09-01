@@ -30,7 +30,18 @@ export function formatDateTime(iso: string): string {
   return format(date, "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })
 }
 
-/** Retorna o intervalo [inicio, fim] em ISO para um filtro de período. */
+/** Formata um Date para o formato aceito pelo input datetime-local (horário local). */
+export function toDatetimeLocalValue(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+    date.getHours()
+  )}:${pad(date.getMinutes())}`
+}
+
+/** Converte o valor de um input datetime-local (horário local) para ISO string. */
+export function fromDatetimeLocalValue(value: string): string {
+  return new Date(value).toISOString()
+}
 export function getPeriodRange(
   filter: PeriodFilter,
   customStart?: string,

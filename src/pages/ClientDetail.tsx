@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Pencil } from 'lucide-react'
+import { Pencil, Trash2, Calendar } from 'lucide-react'
 import { PageHeader } from '../components/PageHeader'
 import { CurrencyInput } from '../components/CurrencyInput'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { formatCurrency } from '../utils/currency'
-import { formatDate, formatTime } from '../utils/date'
-import { getClient } from '../services/clientService'
+import { formatDate, formatTime, toDatetimeLocalValue, fromDatetimeLocalValue } from '../utils/date'
+import { countClientSales, deleteClient, getClient } from '../services/clientService'
 import { getClientDebt, getClientSales } from '../services/saleService'
-import { getClientPayments, registerPayment } from '../services/paymentService'
+import { deletePayment, getClientPayments, registerPayment, updatePayment } from '../services/paymentService'
 import type { Client, SaleWithItems, Payment } from '../types'
 
 type TimelineEntry =
@@ -24,19 +25,31 @@ export function ClientDetail() {
   const [timeline, setTimeline] = useState<TimelineEntry[]>([])
   const [showPaymentSheet, setShowPaymentSheet] = useState(false)
   const [paymentAmount, setPaymentAmount] = useState(0)
+  const [paymentDateValue, setPaymentDateValue] = useState(() => toDatetimeLocalValue(new Date()))
+  const [showPaymentDateField, setShowPaymentDateField] = useState(false)
   const [paymentError, setPaymentError] = useState('')
   const [confirmation, setConfirmation] = useState<{ before: number; paid: number; after: number } | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [salesCount, setSalesCount] = useState(0)
+  const [editingPayment, setEditingPayment] = useState<Payment | null>(null)
+  const [editPaymentAmount, setEditPaymentAmount] = useState(0)
+  const [editPaymentDateValue, setEditPaymentDateValue] = useState(() => toDatetimeLocalValue(new Date()))
+  const [showEditPaymentDateField, setShowEditPaymentDateField] = useState(false)
+  const [editPaymentError, setEditPaymentError] = useState('')
+  const [confirmDeletePayment, setConfirmDeletePayment] = useState(false)
 
   async function load() {
-    const [clientData, currentDebt, sales, payments] = await Promise.all([
+    const [clientData, currentDebt, sales, payments, count] = await Promise.all([
       getClient(clientId),
       getClientDebt(clientId),
       getClientSales(clientId),
-      getClientPayments(clientId)
+      getClientPayments(clientId),
+      countClientSales(clientId)
     ])
 
     setClient(clientData ?? null)
     setDebt(currentDebt)
+    setSalesCount(count)
 
     const entries: TimelineEntry[] = [
       ...sales
@@ -57,14 +70,54 @@ export function ClientDetail() {
     setPaymentError('')
     try {
       const before = debt
-      await registerPayment(clientId, paymentAmount)
+      await registerPayment(clientId, paymentAmount, fromDatetimeLocalValue(paymentDateValue))
       setConfirmation({ before, paid: paymentAmount, after: Math.max(0, before - paymentAmount) })
       setShowPaymentSheet(false)
       setPaymentAmount(0)
+      setPaymentDateValue(toDatetimeLocalValue(new Date()))
+      setShowPaymentDateField(false)
       await load()
     } catch (e) {
       setPaymentError((e as Error).message)
     }
+  }
+
+  async function handleDeleteClient() {
+    await deleteClient(clientId)
+    setConfirmDelete(false)
+    navigate('/clientes')
+  }
+
+  function openEditPayment(payment: Payment) {
+    setEditingPayment(payment)
+    setEditPaymentAmount(payment.amount)
+    setEditPaymentDateValue(toDatetimeLocalValue(new Date(payment.date)))
+    setShowEditPaymentDateField(false)
+    setEditPaymentError('')
+  }
+
+  async function handleSaveEditedPayment() {
+    if (!editingPayment) return
+    setEditPaymentError('')
+    try {
+      await updatePayment(
+        editingPayment.id as number,
+        editPaymentAmount,
+        fromDatetimeLocalValue(editPaymentDateValue)
+      )
+      setEditingPayment(null)
+      await load()
+    } catch (e) {
+      setEditPaymentError((e as Error).message)
+    }
+  }
+
+  async function handleDeletePayment() {
+    if (!editingPayment) return
+    await deletePayment(editingPayment.id as number)
+    setConfirmDeletePayment(false)
+    setEditingPayment(null)
+    await load()
   }
 
   if (!client) return null
@@ -137,11 +190,15 @@ export function ClientDetail() {
                 </div>
               </button>
             ) : (
-              <div key={`payment-${entry.payment.id}`} className="rounded-2xl bg-white p-4 shadow-sm">
+              <button
+                key={`payment-${entry.payment.id}`}
+                onClick={() => openEditPayment(entry.payment)}
+                className="block w-full rounded-2xl bg-white p-4 text-left shadow-sm active:scale-[0.99]"
+              >
                 <p className="text-xs text-slate-400">{formatDate(entry.payment.date)}</p>
                 <p className="mt-1 text-sm font-medium text-slate-700">Pagamento recebido</p>
                 <p className="mt-1 font-semibold text-emerald-600">− {formatCurrency(entry.payment.amount)}</p>
-              </div>
+              </button>
             )
           )}
 
@@ -151,7 +208,29 @@ export function ClientDetail() {
             </p>
           )}
         </div>
+
+        <button
+          onClick={() => setConfirmDelete(true)}
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-red-50 py-3.5 text-sm font-semibold text-red-600 active:scale-[0.98]"
+        >
+          <Trash2 size={16} />
+          Excluir cliente
+        </button>
       </div>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Tem certeza que deseja excluir este cliente?"
+        description={
+          salesCount > 0
+            ? `Este cliente tem ${salesCount} venda${salesCount > 1 ? 's' : ''} no histórico. As vendas continuarão registradas, mas passarão a aparecer como "Cliente removido". Os pagamentos registrados dele serão apagados.`
+            : 'Esta ação não pode ser desfeita.'
+        }
+        confirmLabel="Excluir cliente"
+        danger
+        onConfirm={handleDeleteClient}
+        onCancel={() => setConfirmDelete(false)}
+      />
 
       {showPaymentSheet && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40" onClick={() => setShowPaymentSheet(false)}>
@@ -161,6 +240,40 @@ export function ClientDetail() {
           >
             <h2 className="text-lg font-semibold text-slate-900">Registrar pagamento</h2>
             <p className="mt-1 text-sm text-slate-500">Dívida atual: {formatCurrency(debt)}</p>
+
+            <div className="mt-4 flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3">
+              {!showPaymentDateField ? (
+                <>
+                  <div className="flex items-center gap-2 text-sm text-slate-600">
+                    <Calendar size={16} className="text-slate-400" />
+                    <span>
+                      {new Date(fromDatetimeLocalValue(paymentDateValue)).toLocaleString('pt-BR', {
+                        day: '2-digit',
+                        month: '2-digit',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setShowPaymentDateField(true)}
+                    className="text-sm font-medium text-brand-600"
+                  >
+                    Alterar
+                  </button>
+                </>
+              ) : (
+                <input
+                  type="datetime-local"
+                  value={paymentDateValue}
+                  onChange={(e) => setPaymentDateValue(e.target.value)}
+                  onBlur={() => setShowPaymentDateField(false)}
+                  autoFocus
+                  className="w-full bg-transparent text-sm text-slate-900 outline-none"
+                />
+              )}
+            </div>
 
             <div className="mt-4">
               <CurrencyInput valueCents={paymentAmount} onChange={setPaymentAmount} autoFocus />
@@ -185,6 +298,94 @@ export function ClientDetail() {
           </div>
         </div>
       )}
+      {editingPayment && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/40"
+          onClick={() => setEditingPayment(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-t-3xl bg-white p-6 pb-safe-bottom shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-semibold text-slate-900">Editar pagamento</h2>
+
+            <div className="mt-4 flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3">
+              {!showEditPaymentDateField ? (
+                <>
+                  <div className="flex items-center gap-2 text-sm text-slate-600">
+                    <Calendar size={16} className="text-slate-400" />
+                    <span>
+                      {new Date(fromDatetimeLocalValue(editPaymentDateValue)).toLocaleString('pt-BR', {
+                        day: '2-digit',
+                        month: '2-digit',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setShowEditPaymentDateField(true)}
+                    className="text-sm font-medium text-brand-600"
+                  >
+                    Alterar
+                  </button>
+                </>
+              ) : (
+                <input
+                  type="datetime-local"
+                  value={editPaymentDateValue}
+                  onChange={(e) => setEditPaymentDateValue(e.target.value)}
+                  onBlur={() => setShowEditPaymentDateField(false)}
+                  autoFocus
+                  className="w-full bg-transparent text-sm text-slate-900 outline-none"
+                />
+              )}
+            </div>
+
+            <div className="mt-4">
+              <CurrencyInput valueCents={editPaymentAmount} onChange={setEditPaymentAmount} />
+            </div>
+
+            {editPaymentError && (
+              <p className="mt-2 text-sm font-medium text-red-600">{editPaymentError}</p>
+            )}
+
+            <div className="mt-5 flex gap-3">
+              <button
+                onClick={() => setEditingPayment(null)}
+                className="flex-1 rounded-2xl bg-slate-100 py-3.5 text-sm font-semibold text-slate-700 active:scale-95"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSaveEditedPayment}
+                className="flex-1 rounded-2xl bg-brand-600 py-3.5 text-sm font-semibold text-white active:scale-95"
+              >
+                Salvar
+              </button>
+            </div>
+
+            <button
+              onClick={() => setConfirmDeletePayment(true)}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-red-50 py-3 text-sm font-semibold text-red-600 active:scale-[0.98]"
+            >
+              <Trash2 size={16} />
+              Excluir este pagamento
+            </button>
+          </div>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={confirmDeletePayment}
+        title="Tem certeza que deseja excluir este pagamento?"
+        description="A dívida do cliente vai aumentar de volta pelo valor deste pagamento."
+        confirmLabel="Excluir pagamento"
+        danger
+        onConfirm={handleDeletePayment}
+        onCancel={() => setConfirmDeletePayment(false)}
+      />
     </div>
   )
 }

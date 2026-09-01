@@ -5,6 +5,12 @@ function nowIso() {
   return new Date().toISOString()
 }
 
+/** Soma o "fiado" de todas as vendas ativas de um cliente (sem descontar pagamentos). */
+export async function getClientTotalFiado(clientId: number): Promise<number> {
+  const sales = await db.sales.where('clientId').equals(clientId).toArray()
+  return sales.filter((s) => s.status === 'active').reduce((sum, s) => sum + s.debt, 0)
+}
+
 /**
  * Calcula a dívida atual de um cliente com base no histórico, e não em um
  * campo armazenado isoladamente:
@@ -14,14 +20,10 @@ function nowIso() {
  * O resultado nunca é negativo.
  */
 export async function getClientDebt(clientId: number): Promise<number> {
-  const [sales, payments] = await Promise.all([
-    db.sales.where('clientId').equals(clientId).toArray(),
+  const [totalFiado, payments] = await Promise.all([
+    getClientTotalFiado(clientId),
     db.payments.where('clientId').equals(clientId).toArray()
   ])
-
-  const totalFiado = sales
-    .filter((s) => s.status === 'active')
-    .reduce((sum, s) => sum + s.debt, 0)
 
   const totalPago = payments.reduce((sum, p) => sum + p.amount, 0)
 
@@ -39,6 +41,9 @@ interface CreateSaleInput {
   clientId: number | null
   items: CartItem[]
   paidAmount: number
+  /** Data/hora da venda em ISO. Se omitida, usa o momento atual. Permite
+   *  registrar vendas de dias anteriores que foram esquecidas. */
+  date?: string
 }
 
 /**
@@ -46,7 +51,7 @@ interface CreateSaleInput {
  * garantindo que a venda e os itens sejam gravados de forma atômica.
  */
 export async function createSale(input: CreateSaleInput): Promise<number> {
-  const { clientId, items, paidAmount } = input
+  const { clientId, items, paidAmount, date } = input
 
   if (items.length === 0) {
     throw new Error('Adicione pelo menos um produto.')
@@ -79,7 +84,7 @@ export async function createSale(input: CreateSaleInput): Promise<number> {
   const saleId = await db.transaction('rw', db.sales, db.saleItems, async () => {
     const id = await db.sales.add({
       clientId: clientId ?? null,
-      date: nowIso(),
+      date: date ?? nowIso(),
       total,
       paid: paidAmount,
       debt,
@@ -112,6 +117,31 @@ export async function cancelSale(saleId: number): Promise<void> {
   await db.sales.update(saleId, { status: 'cancelled' })
 }
 
+/**
+ * Corrige o valor pago de uma venda já registrada (ex: cliente pagou o
+ * fiado depois, ou o valor foi lançado errado). O fiado ("debt") é
+ * recalculado automaticamente a partir do total da venda.
+ */
+export async function updateSalePayment(saleId: number, newPaidAmount: number): Promise<void> {
+  const sale = await db.sales.get(saleId)
+  if (!sale) throw new Error('Venda não encontrada.')
+
+  if (!Number.isFinite(newPaidAmount) || newPaidAmount < 0) {
+    throw new Error('O valor pago não pode ser negativo.')
+  }
+  if (newPaidAmount > sale.total) {
+    throw new Error('O valor pago não pode ser maior que o total da venda.')
+  }
+
+  const debt = sale.total - newPaidAmount
+
+  if (debt > 0 && !sale.clientId) {
+    throw new Error('Esta venda não tem cliente vinculado, então não pode ficar fiada.')
+  }
+
+  await db.sales.update(saleId, { paid: newPaidAmount, debt })
+}
+
 async function attachClientNames(sales: Sale[]): Promise<Map<number, string>> {
   const clientIds = Array.from(
     new Set(sales.map((s) => s.clientId).filter((id): id is number => !!id))
@@ -119,7 +149,9 @@ async function attachClientNames(sales: Sale[]): Promise<Map<number, string>> {
   const clients = await db.clients.bulkGet(clientIds)
   const map = new Map<number, string>()
   clients.forEach((client, index) => {
-    if (client) map.set(clientIds[index], client.name)
+    // Cliente pode ter sido excluído — a venda continua no histórico,
+    // mas exibimos "Cliente removido" em vez de esconder a informação.
+    map.set(clientIds[index], client?.name ?? 'Cliente removido')
   })
   return map
 }
@@ -133,7 +165,7 @@ export async function getSaleWithItems(saleId: number): Promise<SaleWithItems | 
   let clientName: string | undefined
   if (sale.clientId) {
     const client = await db.clients.get(sale.clientId)
-    clientName = client?.name
+    clientName = client?.name ?? 'Cliente removido'
   }
 
   return { ...sale, items, clientName }
