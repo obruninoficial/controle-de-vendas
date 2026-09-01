@@ -5,29 +5,57 @@ function nowIso() {
   return new Date().toISOString()
 }
 
-/** Soma o "fiado" de todas as vendas ativas de um cliente (sem descontar pagamentos). */
+/** Soma o "fiado original" de todas as vendas ativas de um cliente (imutável, não desconta pagamentos). */
 export async function getClientTotalFiado(clientId: number): Promise<number> {
   const sales = await db.sales.where('clientId').equals(clientId).toArray()
-  return sales.filter((s) => s.status === 'active').reduce((sum, s) => sum + s.debt, 0)
+  return sales.filter((s) => s.status === 'active').reduce((sum, s) => sum + s.originalDebt, 0)
 }
 
 /**
- * Calcula a dívida atual de um cliente com base no histórico, e não em um
- * campo armazenado isoladamente:
+ * Recalcula a quitação das vendas fiadas de um cliente: pega todos os
+ * pagamentos avulsos já registrados e vai abatendo o "fiado original" das
+ * vendas mais antigas primeiro. Atualiza "paid" e "debt" de cada venda
+ * para refletir o que realmente já foi quitado.
  *
- *   Dívida = soma do "fiado" das vendas ativas − soma dos pagamentos
- *
- * O resultado nunca é negativo.
+ * É chamada sempre que um pagamento é criado, editado ou excluído, ou
+ * quando uma venda é cancelada/editada — garante que o estado fique
+ * sempre consistente, sem depender de atualizações incrementais frágeis.
  */
-export async function getClientDebt(clientId: number): Promise<number> {
-  const [totalFiado, payments] = await Promise.all([
-    getClientTotalFiado(clientId),
+export async function settleClientSales(clientId: number): Promise<void> {
+  const [sales, payments] = await Promise.all([
+    db.sales.where('clientId').equals(clientId).toArray(),
     db.payments.where('clientId').equals(clientId).toArray()
   ])
 
-  const totalPago = payments.reduce((sum, p) => sum + p.amount, 0)
+  const activeSales = sales
+    .filter((s) => s.status === 'active')
+    .sort((a, b) => a.date.localeCompare(b.date)) // mais antigas primeiro
 
-  return Math.max(0, totalFiado - totalPago)
+  let pool = payments.reduce((sum, p) => sum + p.amount, 0)
+
+  await db.transaction('rw', db.sales, async () => {
+    for (const sale of activeSales) {
+      const paidAtSale = sale.total - sale.originalDebt
+      const settled = Math.min(sale.originalDebt, pool)
+      pool -= settled
+
+      const newPaid = paidAtSale + settled
+      const newDebt = sale.originalDebt - settled
+
+      if (sale.paid !== newPaid || sale.debt !== newDebt) {
+        await db.sales.update(sale.id as number, { paid: newPaid, debt: newDebt })
+      }
+    }
+  })
+}
+
+/**
+ * Dívida atual do cliente = soma do "fiado" (debt) das vendas ativas, já
+ * considerando a quitação aplicada pelos pagamentos avulsos.
+ */
+export async function getClientDebt(clientId: number): Promise<number> {
+  const sales = await db.sales.where('clientId').equals(clientId).toArray()
+  return sales.filter((s) => s.status === 'active').reduce((sum, s) => sum + s.debt, 0)
 }
 
 /** Soma a dívida atual de todos os clientes ("A receber" do Dashboard). */
@@ -88,6 +116,7 @@ export async function createSale(input: CreateSaleInput): Promise<number> {
       total,
       paid: paidAmount,
       debt,
+      originalDebt: debt,
       status: 'active'
     })
 
@@ -111,35 +140,49 @@ export async function createSale(input: CreateSaleInput): Promise<number> {
 /**
  * Cancela uma venda (soft delete). A venda não é excluída fisicamente,
  * apenas marcada como "cancelled". Vendas canceladas deixam de contar
- * em relatórios, no Dashboard e na dívida do cliente.
+ * em relatórios, no Dashboard e na dívida do cliente. Se a venda tinha
+ * fiado sendo quitado por pagamentos avulsos, esses pagamentos são
+ * realocados automaticamente para as próximas vendas mais antigas.
  */
 export async function cancelSale(saleId: number): Promise<void> {
+  const sale = await db.sales.get(saleId)
   await db.sales.update(saleId, { status: 'cancelled' })
+  if (sale?.clientId) {
+    await settleClientSales(sale.clientId)
+  }
 }
 
 /**
- * Corrige o valor pago de uma venda já registrada (ex: cliente pagou o
- * fiado depois, ou o valor foi lançado errado). O fiado ("debt") é
- * recalculado automaticamente a partir do total da venda.
+ * Corrige quanto foi pago NO MOMENTO da venda (ex: valor lançado errado
+ * na hora). Isso altera o "fiado original" dessa venda, e a quitação de
+ * todo o cliente é recalculada em seguida — pagamentos avulsos já
+ * registrados continuam quitando as vendas mais antigas primeiro.
  */
-export async function updateSalePayment(saleId: number, newPaidAmount: number): Promise<void> {
+export async function updateSaleOriginalPayment(saleId: number, newPaidAtSale: number): Promise<void> {
   const sale = await db.sales.get(saleId)
   if (!sale) throw new Error('Venda não encontrada.')
 
-  if (!Number.isFinite(newPaidAmount) || newPaidAmount < 0) {
+  if (!Number.isFinite(newPaidAtSale) || newPaidAtSale < 0) {
     throw new Error('O valor pago não pode ser negativo.')
   }
-  if (newPaidAmount > sale.total) {
+  if (newPaidAtSale > sale.total) {
     throw new Error('O valor pago não pode ser maior que o total da venda.')
   }
 
-  const debt = sale.total - newPaidAmount
+  const newOriginalDebt = sale.total - newPaidAtSale
 
-  if (debt > 0 && !sale.clientId) {
+  if (newOriginalDebt > 0 && !sale.clientId) {
     throw new Error('Esta venda não tem cliente vinculado, então não pode ficar fiada.')
   }
 
-  await db.sales.update(saleId, { paid: newPaidAmount, debt })
+  await db.sales.update(saleId, { originalDebt: newOriginalDebt })
+
+  if (sale.clientId) {
+    await settleClientSales(sale.clientId)
+  } else {
+    // Sem cliente, não há pagamentos avulsos a realocar — aplica direto.
+    await db.sales.update(saleId, { paid: newPaidAtSale, debt: newOriginalDebt })
+  }
 }
 
 async function attachClientNames(sales: Sale[]): Promise<Map<number, string>> {

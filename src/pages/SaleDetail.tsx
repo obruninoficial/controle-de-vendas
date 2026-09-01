@@ -5,7 +5,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { CurrencyInput } from '../components/CurrencyInput'
 import { formatCurrency } from '../utils/currency'
 import { formatDate, formatTime } from '../utils/date'
-import { cancelSale, getSaleWithItems, updateSalePayment } from '../services/saleService'
+import { cancelSale, getSaleWithItems, updateSaleOriginalPayment } from '../services/saleService'
 import type { SaleWithItems } from '../types'
 
 export function SaleDetail() {
@@ -16,7 +16,7 @@ export function SaleDetail() {
   const [sale, setSale] = useState<SaleWithItems | null>(null)
   const [confirmCancel, setConfirmCancel] = useState(false)
   const [editingPayment, setEditingPayment] = useState(false)
-  const [editedPaid, setEditedPaid] = useState(0)
+  const [editedPaidAtSale, setEditedPaidAtSale] = useState(0)
   const [error, setError] = useState('')
 
   async function load() {
@@ -37,7 +37,7 @@ export function SaleDetail() {
 
   function openEditPayment() {
     if (!sale) return
-    setEditedPaid(sale.paid)
+    setEditedPaidAtSale(sale.total - sale.originalDebt)
     setError('')
     setEditingPayment(true)
   }
@@ -45,7 +45,7 @@ export function SaleDetail() {
   async function handleSavePayment() {
     setError('')
     try {
-      await updateSalePayment(saleId, editedPaid)
+      await updateSaleOriginalPayment(saleId, editedPaidAtSale)
       setEditingPayment(false)
       await load()
     } catch (e) {
@@ -55,7 +55,9 @@ export function SaleDetail() {
 
   if (!sale) return null
 
-  const editedDebt = Math.max(0, sale.total - editedPaid)
+  const paidAtSale = sale.total - sale.originalDebt
+  const settledLater = sale.paid - paidAtSale
+  const editedOriginalDebt = Math.max(0, sale.total - editedPaidAtSale)
 
   return (
     <div>
@@ -104,11 +106,21 @@ export function SaleDetail() {
             <span className="font-bold text-slate-900">{formatCurrency(sale.total)}</span>
           </div>
           <div className="mt-1.5 flex justify-between text-sm">
-            <span className="text-slate-500">Pago</span>
+            <span className="text-slate-500">Pago no ato da venda</span>
+            <span className="font-medium text-slate-900">{formatCurrency(paidAtSale)}</span>
+          </div>
+          {settledLater > 0 && (
+            <div className="mt-1.5 flex justify-between text-sm">
+              <span className="text-slate-500">Quitado depois</span>
+              <span className="font-medium text-slate-900">{formatCurrency(settledLater)}</span>
+            </div>
+          )}
+          <div className="mt-1.5 flex justify-between border-t border-slate-100 pt-1.5 text-sm">
+            <span className="text-slate-500">Total pago</span>
             <span className="font-semibold text-emerald-600">{formatCurrency(sale.paid)}</span>
           </div>
           <div className="mt-1.5 flex justify-between text-sm">
-            <span className="text-slate-500">Fiado</span>
+            <span className="text-slate-500">Fiado restante</span>
             <span className="font-semibold text-amber-600">{formatCurrency(sale.debt)}</span>
           </div>
 
@@ -117,10 +129,16 @@ export function SaleDetail() {
               onClick={openEditPayment}
               className="mt-3 w-full rounded-2xl bg-brand-50 py-3 text-sm font-semibold text-brand-600 active:scale-[0.98]"
             >
-              Editar pagamento
+              Corrigir valor pago no ato
             </button>
           )}
         </div>
+
+        {sale.debt === 0 && sale.status === 'active' && sale.clientId && (
+          <p className="mt-2 text-center text-xs text-slate-400">
+            Esta venda já está totalmente quitada.
+          </p>
+        )}
 
         {sale.status === 'active' && (
           <button
@@ -135,7 +153,7 @@ export function SaleDetail() {
       <ConfirmDialog
         open={confirmCancel}
         title="Tem certeza que deseja cancelar esta venda?"
-        description="A venda não será excluída, mas deixará de contar nos relatórios, no Dashboard e na dívida do cliente."
+        description="A venda não será excluída, mas deixará de contar nos relatórios, no Dashboard e na dívida do cliente. Pagamentos avulsos que estavam quitando essa venda serão realocados para as próximas mais antigas."
         confirmLabel="Cancelar venda"
         danger
         onConfirm={handleCancel}
@@ -151,14 +169,17 @@ export function SaleDetail() {
             className="w-full max-w-md rounded-t-3xl bg-white p-6 pb-safe-bottom shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-lg font-semibold text-slate-900">Editar pagamento</h2>
-            <p className="mt-1 text-sm text-slate-500">Total da venda: {formatCurrency(sale.total)}</p>
+            <h2 className="text-lg font-semibold text-slate-900">Corrigir valor pago no ato</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Total da venda: {formatCurrency(sale.total)}. Isso é o que o cliente pagou na hora —
+              pagamentos avulsos feitos depois continuam sendo controlados na tela do cliente.
+            </p>
 
             <div className="mt-4 flex gap-2">
               <button
-                onClick={() => setEditedPaid(sale.total)}
+                onClick={() => setEditedPaidAtSale(sale.total)}
                 className={`flex-1 rounded-2xl py-3 text-sm font-semibold active:scale-[0.98] ${
-                  editedPaid === sale.total
+                  editedPaidAtSale === sale.total
                     ? 'bg-emerald-600 text-white'
                     : 'bg-emerald-50 text-emerald-700'
                 }`}
@@ -166,9 +187,9 @@ export function SaleDetail() {
                 Pago
               </button>
               <button
-                onClick={() => setEditedPaid(0)}
+                onClick={() => setEditedPaidAtSale(0)}
                 className={`flex-1 rounded-2xl py-3 text-sm font-semibold active:scale-[0.98] ${
-                  editedPaid === 0 ? 'bg-amber-600 text-white' : 'bg-amber-50 text-amber-700'
+                  editedPaidAtSale === 0 ? 'bg-amber-600 text-white' : 'bg-amber-50 text-amber-700'
                 }`}
               >
                 Fiado
@@ -176,18 +197,18 @@ export function SaleDetail() {
             </div>
 
             <label className="mb-1.5 mt-4 block text-sm font-medium text-slate-600">
-              Ou digite o valor pago
+              Ou digite o valor pago no ato
             </label>
-            <CurrencyInput valueCents={editedPaid} onChange={setEditedPaid} />
+            <CurrencyInput valueCents={editedPaidAtSale} onChange={setEditedPaidAtSale} />
 
             <div className="mt-3 flex gap-3 text-sm">
               <div className="flex-1 rounded-2xl bg-emerald-50 p-3 text-center">
-                <p className="text-emerald-700">Pago</p>
-                <p className="font-semibold text-emerald-700">{formatCurrency(editedPaid)}</p>
+                <p className="text-emerald-700">Pago no ato</p>
+                <p className="font-semibold text-emerald-700">{formatCurrency(editedPaidAtSale)}</p>
               </div>
               <div className="flex-1 rounded-2xl bg-amber-50 p-3 text-center">
-                <p className="text-amber-700">Fiado</p>
-                <p className="font-semibold text-amber-700">{formatCurrency(editedDebt)}</p>
+                <p className="text-amber-700">Fiado original</p>
+                <p className="font-semibold text-amber-700">{formatCurrency(editedOriginalDebt)}</p>
               </div>
             </div>
 

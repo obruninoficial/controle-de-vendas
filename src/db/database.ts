@@ -25,6 +25,30 @@ export class ControleDeVendasDB extends Dexie {
       saleItems: '++id, saleId, productId',
       payments: '++id, clientId, date'
     })
+
+    // v2: adiciona "originalDebt" em sales, usado para quitar vendas fiadas
+    // mais antigas primeiro quando o cliente faz um pagamento avulso.
+    // Para vendas já existentes, o valor de "debt" nunca havia sido
+    // alterado por pagamentos (isso era calculado à parte), então ele
+    // representa corretamente o fiado original — é só copiar.
+    this.version(2)
+      .stores({
+        products: '++id, name, createdAt',
+        clients: '++id, name, createdAt',
+        sales: '++id, clientId, date, status',
+        saleItems: '++id, saleId, productId',
+        payments: '++id, clientId, date'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('sales')
+          .toCollection()
+          .modify((sale: Sale) => {
+            if (sale.originalDebt === undefined) {
+              sale.originalDebt = sale.debt
+            }
+          })
+      })
   }
 }
 

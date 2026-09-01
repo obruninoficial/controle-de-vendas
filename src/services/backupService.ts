@@ -1,5 +1,6 @@
 import { db } from '../db/database'
 import type { Product, Client, Sale, SaleItem, Payment } from '../types'
+import { settleClientSales } from './saleService'
 
 interface BackupFile {
   app: 'controle-de-vendas'
@@ -113,10 +114,25 @@ export async function restoreBackup(backup: BackupFile): Promise<void> {
       await Promise.all([
         db.products.bulkAdd(backup.data.products),
         db.clients.bulkAdd(backup.data.clients),
-        db.sales.bulkAdd(backup.data.sales),
+        // Backups gerados antes da funcionalidade de quitação automática
+        // não têm o campo "originalDebt" — nesse caso, usamos o "debt"
+        // já salvo (equivalente, pois nunca era alterado por pagamentos).
+        db.sales.bulkAdd(
+          backup.data.sales.map((sale) => ({
+            ...sale,
+            originalDebt: sale.originalDebt ?? sale.debt
+          }))
+        ),
         db.saleItems.bulkAdd(backup.data.saleItems),
         db.payments.bulkAdd(backup.data.payments)
       ])
     }
   )
+
+  // Reprocessa a quitação de todos os clientes para que "pago"/"fiado"
+  // reflita corretamente os pagamentos já registrados no backup restaurado.
+  const clientIds = await db.clients.toCollection().primaryKeys()
+  for (const clientId of clientIds) {
+    await settleClientSales(clientId as number)
+  }
 }

@@ -22,8 +22,14 @@ export interface Sale {
   clientId?: number | null
   date: string // ISO string
   total: number // centavos
-  paid: number // centavos
-  debt: number // centavos
+  paid: number // centavos — total pago até agora (no ato da venda + quitações posteriores)
+  debt: number // centavos — quanto ainda falta pagar desta venda
+  /**
+   * Quanto ficou fiado no momento da venda (imutável). Serve de base para
+   * a quitação: quando o cliente faz um pagamento avulso depois, ele abate
+   * primeiro o "originalDebt" das vendas mais antigas ainda em aberto.
+   */
+  originalDebt: number
   status: SaleStatus
 }
 
